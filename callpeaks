@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+set -e
+
+# author: anand mayakonda <anandmt3@gmail.com>
+
+# Bash script to call peaks from MACS2 peak caller
+
+# Requires: samtools, macs2, bedGraphToBigWig, bedClip, bedtools
+
+# conda install -c bioconda macs2
+# conda install -c bioconda samtools
+# conda install -c bioconda bedtools
+# conda install -c bioconda ucsc-bedclip
+# conda install -c bioconda ucsc-bedGraphToBigWig
+
+
+function usage() {
+  echo "---------------------------------------------------------------------------------------------------------------------------------------------------
+usage: callpeaks [options] <chip.bam>
+
+callpeaks - wrapper around macs2 callpeak. Also generates bigWigs from bedGraphs by subtracting input signal.
+
+positional arguments:
+  <chip.bam>   ChIP bam file. Required.
+
+optional arguments:
+  -d           Output directory to store results. Optional. Default ./macs_op
+  -o           Basename for output file. Usually sample name. Default parses from <chip.bam>
+  -f           Format of Input file, "AUTO", "BED" or "ELAND" or "ELANDMULTI" or "ELANDEXPORT" or "SAM" or "BAM" or "BOWTIE" or "BAMPE" or "BEDPE"
+  -g           Effective genome size. Default hs. (can be mm, ce, dm)
+  -q           Minimum FDR (q-value) cutoff for peak detection. Deafult 0.05
+  -i           Input bam file. e.g, IgG or whole cell extract
+  -b           Call broad peaks. Default false
+               Broad histone marks:  H3F3A H3K27me3 H3K4me1 H3K79me2 H3K79me3 H3K9me1 H3K9me2 H4K20me1
+               Narrow histone marks: H2AFZ H3ac H3K27ac H3K4me2 H3K4me3 H3K9ac
+               See here: https://www.encodeproject.org/chip-seq/histone/
+
+Example: callpeaks -i HeLa_IgG.bam HeLa_H3K27Ac.bam
+---------------------------------------------------------------------------------------------------------------------------------------------------
+"
+}
+
+function macs_check() {
+  mact=`which macs2 || true`
+  if [ ! -f "$mact" ];then
+   echo "macs2 not found! Try: conda install -c bioconda macs2"
+   tput sgr0
+   exit
+  fi
+}
+
+# from https://gist.github.com/taoliu/2469050
+function bdg2bw() {
+  F=$1
+  G=$2
+
+  bedtools slop -i ${F} -g ${G} -b 0 | bedClip stdin ${G} ${F}.clip
+  LC_COLLATE=C sort -k1,1 -k2,2n ${F}.clip > ${F}.sort.clip
+  bedGraphToBigWig ${F}.sort.clip ${G} ${F/bdg/bw}
+  rm -f ${F}.clip ${F}.sort.clip
+}
+
+if test -z "$1"
+   then
+   usage
+   exit 1
+fi
+
+output_dir="./macs_op/" #d
+gsize="hs" #g
+qmin=0.05 #q
+broad="false" #b
+format="AUTO" #f
+input="" #i
+
+while getopts ":hw:d:o:f:i:g:q:b:" OPTION
+  do
+    case "${OPTION}" in
+      h)
+        usage
+        exit 1
+        ;;
+      d)
+        output_dir="$OPTARG"
+        ;;
+      i)
+        input="$OPTARG"
+        ;;
+      o)
+        output_fn="$OPTARG"
+        ;;
+      g)
+        gsize="$OPTARG"
+        ;;
+      q)
+        qmin="$OPTARG"
+        ;;
+      b)
+        broad="$OPTARG"
+        ;;
+      f)
+        format="$OPTARG"
+        ;;
+      ?)
+        unkOpt="$OPTARG"
+        usage
+        echo -e "Unknown option: ${unkOpt}"
+        exit
+        ;;
+    esac
+  done
+
+chip="${@:$((${OPTIND})):1}"
+
+if [[ -z "${chip}" ]]
+then
+	usage
+	echo "Missing BAM file!"
+	exit 1
+fi
+
+if [[ ! -f "${chip}" ]]
+then
+	echo "BAM file ${chip} does not exists!"
+	exit 1
+fi
+
+if [[ ! -z "${input}" ]] && [[ ! -f "${input}" ]]
+then
+	echo "Input BAM file ${input} does not exists!"
+	exit 1
+fi
+
+
+if [[ -z "${output_fn}" ]]
+ then
+  output_fn=`basename ${chip} .bam`
+fi
+
+if [ ${broad} != "true" ] && [ ${broad} != "false" ]
+then
+	echo "argument -b can only be true or false"
+	exit 1
+fi
+
+
+mkdir -p ${output_dir}
+
+
+if [ -z ${input} ]
+then
+	if [ ${broad} == "true" ]
+	then
+		#echo "broad and no-input"
+		macsCmd="macs2 callpeak -t ${chip} -f ${format} --broad -g ${gsize} --seed 1024 --keep-dup 1 --outdir ${output_dir} \
+            --name ${output_fn} --bdg --SPMR --nomodel --extsize 200 -q ${qmin} --broad 2>> ${output_dir}"/"${output_fn}.macs2Log"
+	else
+		#echo "no-broad and no-input"
+		macsCmd="macs2 callpeak -t ${chip} -f ${format} -g ${gsize} --seed 1024 --keep-dup 1 --outdir ${output_dir} \
+            --name ${output_fn} --bdg --SPMR --nomodel --extsize 200 -q ${qmin} 2>> ${output_dir}"/"${output_fn}.macs2Log"
+	fi
+else
+	if [ ${broad} == "true" ]
+	then
+		#echo "broad and input"
+		macsCmd="macs2 callpeak -t ${chip} -c ${input} -f ${format} --broad -g ${gsize} --seed 1024 --keep-dup 1 --outdir ${output_dir} \
+            --name ${output_fn} --bdg --SPMR --nomodel --extsize 200 -q ${qmin} --broad 2>> ${output_dir}"/"${output_fn}.macs2Log"
+	else
+		#echo "no-broad and input"
+		macsCmd="macs2 callpeak -t ${chip} -c ${input} -f ${format} -g ${gsize} --seed 1024 --keep-dup 1 --outdir ${output_dir} \
+            --name ${output_fn} --bdg --SPMR --nomodel --extsize 200 -q ${qmin} 2>> ${output_dir}"/"${output_fn}.macs2Log"
+	fi
+fi
+
+
+echo -e "Running macs2 callpeak.."
+echo "  ChIP BAM      : ${chip}"
+echo "  Input BAM     : ${input}"
+echo "  sample name   : ${output_fn}"
+echo "  q-value       : ${qmin}"
+echo "  broad peaks   : ${broad}"
+echo "  output dir    : ${output_dir}"
+
+echo -e ${macsCmd} >> ${output_dir}"/"${output_fn}.macs2Log
+eval ${macsCmd}
+
+if [ ${broad} == "true" ]
+then
+  npeaks=`wc -l ${output_dir}/${output_fn}_peaks.broadPeak | cut -d ' ' -f 1`
+else
+  npeaks=`wc -l ${output_dir}/${output_fn}_peaks.narrowPeak | cut -d ' ' -f 1`
+fi
+
+echo "  no. of Peaks  : ${npeaks}"
+
+echo "Generating bigWigs.."
+
+which samtools &>/dev/null || { echo "samtools not found! Try: conda install -c bioconda samtools"; exit 1; }
+which bedtools &>/dev/null || { echo "bedtools not found! Try: conda install -c bioconda install bedtools"; exit 1; }
+which bedGraphToBigWig &>/dev/null || { echo "bedGraphToBigWig not found! conda install -c bioconda install bedGraphToBigWig"; exit 1; }
+which bedClip &>/dev/null || { echo "bedClip not found! conda install -c bioconda install bedClip"; exit 1; }
+chromSizes="${output_dir}/${output_fn}.chrom.sizes"
+samtools view -H ${chip} | grep "@SQ" | cut -f 2,3 | tr ':' '\t' | cut -f 2,4 > ${chromSizes}
+
+echo "  Subtracting Input signal from ChIP.."
+macs2 bdgcmp -t ${output_dir}"/"${output_fn}"_treat_pileup.bdg" -c ${output_dir}"/"${output_fn}"_control_lambda.bdg" -o ${output_dir}"/"${output_fn}"_subtract.bdg" -m subtract 2>> ${output_dir}"/"${output_fn}.macs2bdgcmpLog
+echo "  Setting negative values to zero.."
+awk '{OFS="\t" ; if($4 < 0) {print $1,$2,$3,0} else {print $0}}' ${output_dir}"/"${output_fn}"_subtract.bdg" > ${output_dir}"/"${output_fn}"_inputMinus.bdg"
+rm -f ${output_dir}"/"${output_fn}"_subtract.bdg"
+echo "  Converting bedGraphs to bigWigs.."
+bdg2bw ${output_dir}"/"${output_fn}"_inputMinus.bdg" ${chromSizes}
+bdg2bw ${output_dir}"/"${output_fn}"_control_lambda.bdg" ${chromSizes}
+bdg2bw ${output_dir}"/"${output_fn}"_treat_pileup.bdg" ${chromSizes}
+mv ${output_dir}"/"${output_fn}"_inputMinus.bw" ${output_dir}"/"${output_fn}".bw"
+rm ${output_dir}"/"${output_fn}"_inputMinus.bdg"  	
+
+gzip -f ${output_dir}"/"${output_fn}"_control_lambda.bdg"
+gzip -f ${output_dir}"/"${output_fn}"_treat_pileup.bdg"
+
+echo "Done!"
